@@ -95,3 +95,113 @@ def test_stderr_registra_metodo_id_traceparent(servidor):
     servidor.rpc("tools/list", traceparent=tp, id=4242)
     linha = next(l for l in servidor.stderr().splitlines() if "4242" in l)
     assert "tools/list" in linha and tp in linha
+
+
+# ---------------------------------------------------------------- MRTR
+import pytest
+
+from conftest import ServidorMcp
+
+CONFLITO = args("sala-garagem", (14,), (15,), "Marty")
+
+
+def pedir_conflito(servidor, **kw):
+    _, body = servidor.chamar("reservar_sala", CONFLITO, **kw)
+    return body
+
+
+def retry(servidor, body, escolha=None, argumentos=None, state=None, action="accept", **kw):
+    res = body["result"]
+    chave = next(iter(res["inputRequests"]))
+    resp = {"action": action}
+    if action == "accept":
+        resp["content"] = {"sala": escolha}
+    extra = {"inputResponses": {chave: resp}, "requestState": state or res["requestState"]}
+    return servidor.chamar("reservar_sala", argumentos or CONFLITO, extra=extra, **kw)
+
+
+def test_conflito_input_required(servidor):
+    res = pedir_conflito(servidor)["result"]
+    assert res["resultType"] == "input_required"
+    assert len(res["inputRequests"]) == 1
+    req = next(iter(res["inputRequests"].values()))
+    assert req["method"] == "elicitation/create" and req["params"]["mode"] == "form"
+    assert req["params"]["requestedSchema"]["properties"]["sala"]["enum"] == ["sala-fusca", "sala-mirante"]
+    assert res["requestState"]
+
+
+def test_retry_conclui(servidor):
+    body = pedir_conflito(servidor)
+    st, r = retry(servidor, body, "sala-fusca")
+    res = r["result"]
+    assert res["resultType"] == "complete" and res["structuredContent"]["sala"] == "sala-fusca"
+    assert res["structuredContent"]["responsavel"] == "Marty"
+
+
+def test_retry_apos_restart():
+    s = ServidorMcp().iniciar()
+    try:
+        body = pedir_conflito(s)
+        s.parar()
+        s.iniciar()
+        _, r = retry(s, body, "sala-mirante")
+        assert r["result"]["structuredContent"]["sala"] == "sala-mirante"
+    finally:
+        s.parar()
+        s.log.unlink(missing_ok=True)
+
+
+def test_request_state_adulterado_32602(servidor):
+    body = pedir_conflito(servidor)
+    estado = body["result"]["requestState"]
+    ruim = estado[:-5] + ("A" if estado[-5] != "A" else "B") + estado[-4:]
+    st, r = retry(servidor, body, "sala-fusca", state=ruim)
+    assert r["error"]["code"] == -32602
+
+
+def test_request_state_com_segredo_diferente_32602(servidor):
+    body = pedir_conflito(servidor)
+    outro = ServidorMcp().iniciar()
+    try:
+        _, r = retry(outro, body, "sala-fusca")
+        assert r["error"]["code"] == -32602
+    finally:
+        outro.parar()
+        outro.log.unlink(missing_ok=True)
+
+
+def test_retry_com_argumentos_adulterados_nao_reserva_valores_adulterados(servidor):
+    body = pedir_conflito(servidor)
+    adulterado = args("sala-aquario", (9,), (10,), "Intruso")
+    _, r = retry(servidor, body, "sala-fusca", argumentos=adulterado)
+    sc = (r.get("result") or {}).get("structuredContent") or {}
+    assert sc.get("responsavel") != "Intruso" and sc.get("sala") != "sala-aquario"
+    _, c = servidor.chamar("consultar_disponibilidade", {k: adulterado[k] for k in ("sala", "inicio", "fim")})
+    assert c["result"]["structuredContent"]["livre"] is True
+
+
+def test_sem_capability_32021(servidor):
+    st, body = servidor.chamar("reservar_sala", CONFLITO, caps=False)
+    assert st == 400 and body["error"]["code"] == -32021
+    assert body["error"]["data"]["requiredCapabilities"] == {"elicitation": {"form": {}}}
+
+
+@pytest.mark.parametrize("action", ["decline", "cancel"])
+def test_recusa_completa_sem_reservar(servidor, action):
+    body = pedir_conflito(servidor)
+    _, r = retry(servidor, body, action=action)
+    res = r["result"]
+    assert res["resultType"] == "complete" and not res.get("isError")
+    assert res["structuredContent"]["reservado"] is False
+    assert res["structuredContent"]["motivo"] == "recusado"
+
+
+def test_sem_alternativas(servidor):
+    for sala in ("sala-mirante",):
+        pass
+    # ocupa mirante (unica sala com capacidade >= 20) e pede de novo
+    servidor.chamar("reservar_sala", args("sala-mirante", (14,), (15,), "A"))
+    _, body = servidor.chamar("reservar_sala", args("sala-mirante", (14,), (15,), "B"))
+    res = body["result"]
+    assert res["isError"] is True
+    assert "Sem alternativas disponiveis no intervalo" in res["content"][0]["text"]

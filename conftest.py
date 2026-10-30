@@ -40,6 +40,8 @@ class ServidorMcp:
             [sys.executable, "-m", "central_salas"], env=env, stderr=self._arq, stdout=self._arq
         )
         for _ in range(100):
+            if self.proc.poll() is not None:
+                raise RuntimeError("servidor MCP morreu: " + self.log.read_text(errors="replace")[-1500:])
             try:
                 socket.create_connection(("127.0.0.1", self.porta), timeout=0.2).close()
                 return self
