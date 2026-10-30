@@ -205,3 +205,13 @@ def test_sem_alternativas(servidor):
     res = body["result"]
     assert res["isError"] is True
     assert "Sem alternativas disponiveis no intervalo" in res["content"][0]["text"]
+
+
+def test_alternativa_escolhida_ocupada_no_meio_tempo_nao_gera_dupla_reserva(servidor):
+    body = pedir_conflito(servidor)
+    servidor.chamar("reservar_sala", args("sala-fusca", (14,), (15,), "Outro"))  # toma a alternativa
+    _, r = retry(servidor, body, "sala-fusca")
+    sc = (r.get("result") or {}).get("structuredContent") or {}
+    assert sc.get("reservado") is not True or sc.get("sala") != "sala-fusca"
+    _, c = servidor.chamar("consultar_disponibilidade", args("sala-fusca", (14,), (15,), "x"))
+    assert len(c["result"]["structuredContent"]["conflitos"]) == 1
