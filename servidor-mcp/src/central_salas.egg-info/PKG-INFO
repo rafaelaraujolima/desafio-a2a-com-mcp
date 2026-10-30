@@ -1,6 +1,0 @@
-Metadata-Version: 2.4
-Name: central-salas
-Version: 1.0.0
-Summary: Servidor MCP da Central de Salas (Hill Valley Tech)
-Requires-Python: >=3.10
-Requires-Dist: mcp==2.3.0
