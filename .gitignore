@@ -6,3 +6,4 @@ dist/
 *.log
 *.egg-info/
 .pytest_cache/
+.servidor-*.log
